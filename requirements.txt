@@ -1,7 +1,10 @@
 streamlit
-requests
 biopython
+requests
+pandas
 py3Dmol
 stmol
+plotly
+fpdf==1.7.2
+matplotlib
 ipython-genutils
-ipywidgets
