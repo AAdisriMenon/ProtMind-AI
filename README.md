@@ -6,7 +6,7 @@ AI-powered platform for protein mutation analysis and prediction using bioinform
 
 ProtMind AI is an interactive bioinformatics web application designed to analyze protein mutations through a structured, step-by-step workflow. The platform integrates biological databases, sequence analysis, mutation validation, and protein structure visualization to provide an organized foundation for protein mutation research.
 
-The project is currently under development, with the first five stages of the workflow implemented.
+The project is currently under development, with ten stages of the workflow implemented.
 
 ---
 
