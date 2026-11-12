@@ -2,7 +2,7 @@ import re
 import requests
 import streamlit as st
 from Bio import Align
-from Bio.Align import substitution_matrices
+from Bio.SeqUtils.ProtParam import ProteinAnalysis
 
 # ========= UI / CSS STYLING =========
 def apply_custom_css():
@@ -26,26 +26,24 @@ def apply_custom_css():
     """, unsafe_allow_html=True)
 
 
-# ========= PIPELINE PROGRESS TRACKER =========
+# ========= PIPELINE PROGRESS TRACKER (3-STEP PROTOTYPE) =========
 PIPELINE_STEPS = [
-    "User Input",
+    "User Input & Validation",
     "Data Retrieval",
-    "Preprocessing",
-    "Mutation Analysis",
-    "Structure Prediction",
+    "Preprocessing & Motif/Domain Search",
 ]
 
 
 def render_progress(current_step: int):
-    """Renders a sidebar checklist showing where the user is in the 5-step pipeline."""
+    """Renders a sidebar checklist showing where the user is in the 3-step prototype pipeline."""
     st.sidebar.markdown("### 🧭 Pipeline Progress")
     for i, name in enumerate(PIPELINE_STEPS, start=1):
         if i < current_step:
-            st.sidebar.markdown(f"✅ {i}. {name}")
+            st.sidebar.markdown(f"✅ Step 0{i}: {name}")
         elif i == current_step:
-            st.sidebar.markdown(f"➡️ **{i}. {name}**")
+            st.sidebar.markdown(f"➡️ **Step 0{i}: {name}**")
         else:
-            st.sidebar.markdown(f"⬜ {i}. {name}")
+            st.sidebar.markdown(f"⬜ Step 0{i}: {name}")
     st.sidebar.divider()
     if st.sidebar.button("🔄 Reset Session"):
         for key in list(st.session_state.keys()):
@@ -69,9 +67,6 @@ def validate_sequence(seq: str) -> bool:
 
 
 def validate_uniprot_id(uniprot_id: str) -> bool:
-    # Fixed: original regex leaked the alternation outside the anchors
-    # (^ only bound the first alternative, $ only bound the second),
-    # so it silently accepted malformed IDs. Now both branches are anchored.
     pattern = re.compile(
         r'^([OPQ][0-9][A-Z0-9]{3}[0-9]|[A-NR-Z][0-9]([A-Z][A-Z0-9]{2}[0-9]){1,2})$',
         re.IGNORECASE,
@@ -87,36 +82,92 @@ def validate_mutation(mutation: str) -> bool:
 # ========= STEP 2: DATA RETRIEVAL =========
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_uniprot_data(uniprot_id: str) -> dict:
+    """Fetches protein annotations, sequence, features, and Pfam cross-refs from UniProtKB."""
     url = f"https://rest.uniprot.org/uniprotkb/{uniprot_id}"
     try:
         response = requests.get(url, timeout=10)
     except requests.exceptions.RequestException as exc:
         return {"Error": f"Network error contacting UniProt: {exc}"}
 
-    if response.status_code == 200:
-        data = response.json()
-        try:
-            protein_name = data.get("proteinDescription", {}).get("recommendedName", {}).get("fullName", {}).get("value", "Unknown")
-        except AttributeError:
-            protein_name = "Unknown"
-        return {
-            "Entry": data.get("primaryAccession", uniprot_id),
-            "Protein Name": protein_name,
-            "Gene": data.get("genes", [{}])[0].get("geneName", {}).get("value", "Unknown"),
-            "Organism": data.get("organism", {}).get("scientificName", "Unknown"),
-            "Sequence Length": data.get("sequence", {}).get("length", 0),
-            # Fixed: the live sequence text was never actually retrieved, so the
-            # "auto-fill sequence" logic in Step 2 was always a dead branch.
-            "Sequence": data.get("sequence", {}).get("value", ""),
-        }
-    return {"Error": f"Could not retrieve data for {uniprot_id} (Status: {response.status_code})"}
+    if response.status_code != 200:
+        return {"Error": f"Could not retrieve data for {uniprot_id} (Status: {response.status_code})"}
+
+    data = response.json()
+    try:
+        protein_name = (
+            data.get("proteinDescription", {})
+            .get("recommendedName", {})
+            .get("fullName", {})
+            .get("value", "Unknown")
+        )
+    except AttributeError:
+        protein_name = "Unknown"
+
+    # Extract function and subcellular location comments
+    function_texts = []
+    subcellular_locations = []
+    for comment in data.get("comments", []):
+        ctype = comment.get("commentType", "")
+        if ctype == "FUNCTION":
+            for t in comment.get("texts", []):
+                if t.get("value"):
+                    function_texts.append(t["value"])
+        elif ctype == "SUBCELLULAR LOCATION":
+            for loc in comment.get("subcellularLocations", []):
+                val = loc.get("location", {}).get("value")
+                if val:
+                    subcellular_locations.append(val)
+
+    # Extract annotated domains, motifs, and functional sites
+    relevant_types = {"Domain", "Region", "Motif", "Active site", "Binding site", "Zinc finger", "DNA binding", "Site"}
+    annotated_features = []
+    for feat in data.get("features", []):
+        ftype = feat.get("type", "")
+        if ftype in relevant_types:
+            loc = feat.get("location", {})
+            start = loc.get("start", {}).get("value")
+            end = loc.get("end", {}).get("value")
+            annotated_features.append({
+                "Type": ftype,
+                "Description": feat.get("description", "—") or "—",
+                "Start": start,
+                "End": end,
+            })
+
+    # Extract Pfam cross-references
+    pfam_refs = []
+    for xref in data.get("uniProtKBCrossReferences", []):
+        if xref.get("database") == "Pfam":
+            props = {p.get("key"): p.get("value") for p in xref.get("properties", [])}
+            pfam_refs.append({
+                "Pfam ID": xref.get("id", ""),
+                "Domain Name": props.get("EntryName", "Unknown"),
+            })
+
+    keywords = [kw.get("name") for kw in data.get("keywords", []) if kw.get("name")]
+
+    return {
+        "Entry": data.get("primaryAccession", uniprot_id),
+        "Protein Name": protein_name,
+        "Gene": data.get("genes", [{}])[0].get("geneName", {}).get("value", "Unknown") if data.get("genes") else "Unknown",
+        "Organism": data.get("organism", {}).get("scientificName", "Unknown"),
+        "Sequence Length": data.get("sequence", {}).get("length", 0),
+        "Sequence": data.get("sequence", {}).get("value", ""),
+        "Function": " ".join(function_texts) if function_texts else "No functional summary available.",
+        "Subcellular Location": ", ".join(dict.fromkeys(subcellular_locations)) if subcellular_locations else "Not specified",
+        "Keywords": keywords[:12],
+        "Features": annotated_features,
+        "Pfam Cross-Refs": pfam_refs,
+    }
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_alphafold_url(uniprot_id: str) -> str:
-    url = f"https://alphafold.ebi.ac.uk/api/prediction/{uniprot_id}"
+    # Ensure the accession is clean (take only the base ID before any dash)
+    clean_accession = uniprot_id.split("-")[0].strip()
+    api_url = f"https://alphafold.ebi.ac.uk/api/prediction/{clean_accession}"
     try:
-        response = requests.get(url, timeout=10)
+        response = requests.get(api_url, timeout=10)
     except requests.exceptions.RequestException:
         return None
 
@@ -127,13 +178,34 @@ def fetch_alphafold_url(uniprot_id: str) -> str:
     return None
 
 
-# ========= STEP 3: PREPROCESSING & BIOPHYSICS =========
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_pdb_content(pdb_url: str) -> str:
+    """Fetches the raw PDB file text from the AlphaFold database URL."""
+    if not pdb_url:
+        return ""
+    try:
+        response = requests.get(pdb_url, timeout=10)
+        if response.status_code == 200:
+            return response.text
+    except requests.exceptions.RequestException:
+        return ""
+    return ""
+
+
+# ========= STEP 3: PREPROCESSING & MOTIF/DOMAIN SEARCH =========
 def get_amino_acid_property(aa: str) -> str:
-    hydrophobic, polar, positive, negative = {'A', 'V', 'I', 'L', 'M', 'F', 'Y', 'W'}, {'S', 'T', 'N', 'Q', 'C'}, {'R', 'H', 'K'}, {'D', 'E'}
-    if aa in hydrophobic: return "Hydrophobic"
-    if aa in polar: return "Polar/Neutral"
-    if aa in positive: return "Positively Charged"
-    if aa in negative: return "Negatively Charged"
+    hydrophobic = {'A', 'V', 'I', 'L', 'M', 'F', 'Y', 'W'}
+    polar = {'S', 'T', 'N', 'Q', 'C'}
+    positive = {'R', 'H', 'K'}
+    negative = {'D', 'E'}
+    if aa in hydrophobic:
+        return "Hydrophobic"
+    if aa in polar:
+        return "Polar/Neutral"
+    if aa in positive:
+        return "Positively Charged"
+    if aa in negative:
+        return "Negatively Charged"
     return "Special/Other"
 
 
@@ -142,9 +214,6 @@ def extract_features(sequence: str, mutation: str) -> dict:
     mut_aa = mutation[-1].upper()
     position = int(mutation[1:-1])
 
-    # Fixed: this used to index straight into the sequence, which threw an
-    # uncaught IndexError (crashing the page) whenever the mutation position
-    # was out of range. Now the bounds check happens before indexing.
     is_in_range = 1 <= position <= len(sequence)
     is_valid_pos = is_in_range and sequence[position - 1].upper() == wt_aa
 
@@ -157,7 +226,36 @@ def extract_features(sequence: str, mutation: str) -> dict:
         "In Range": is_in_range,
         "WT Property": get_amino_acid_property(wt_aa),
         "Mutant Property": get_amino_acid_property(mut_aa),
-        "Property Shift": f"{get_amino_acid_property(wt_aa)} ➡️ {get_amino_acid_property(mut_aa)}"
+        "Property Shift": f"{get_amino_acid_property(wt_aa)} ➡️ {get_amino_acid_property(mut_aa)}",
+    }
+
+
+def extract_sequence_profile(sequence: str) -> dict:
+    """Computes global biophysical sequence features using Biopython ProteinAnalysis."""
+    clean_seq = "".join(sequence.split()).upper()
+    if not clean_seq:
+        return {}
+
+    analyser = ProteinAnalysis(clean_seq)
+    total = len(clean_seq)
+    counts = {
+        "Hydrophobic": sum(1 for aa in clean_seq if aa in {'A', 'V', 'I', 'L', 'M', 'F', 'Y', 'W'}),
+        "Polar/Neutral": sum(1 for aa in clean_seq if aa in {'S', 'T', 'N', 'Q', 'C'}),
+        "Positively Charged": sum(1 for aa in clean_seq if aa in {'R', 'H', 'K'}),
+        "Negatively Charged": sum(1 for aa in clean_seq if aa in {'D', 'E'}),
+        "Special (G, P)": sum(1 for aa in clean_seq if aa in {'G', 'P'}),
+    }
+    composition_pct = {k: round((v / total) * 100, 2) for k, v in counts.items()}
+
+    return {
+        "Length (aa)": total,
+        "Molecular Weight (Da)": round(analyser.molecular_weight(), 2),
+        "Isoelectric Point (pI)": round(analyser.isoelectric_point(), 2),
+        "GRAVY (Hydropathicity)": round(analyser.gravy(), 3),
+        "Aromaticity": round(analyser.aromaticity(), 3),
+        "Instability Index": round(analyser.instability_index(), 2),
+        "Charge at pH 7.0": round(analyser.charge_at_pH(7.0), 2),
+        "Class Composition (%)": composition_pct,
     }
 
 
@@ -171,102 +269,120 @@ def calculate_alignment_score(wildtype_seq: str, mutant_seq: str) -> float:
     return (best_alignment.score / len(wildtype_seq)) * 100
 
 
-# ========= STEP 4: MUTATION ANALYSIS & FUNCTIONAL PROTEOMICS =========
 @st.cache_data(ttl=3600, show_spinner=False)
-def fetch_string_ppi(uniprot_id: str, limit: int = 5) -> list:
+def fetch_pfam_domains(uniprot_id: str, mutation_pos: int = None, uniprot_metadata: dict = None) -> list:
     """
-    Fetches the top protein-protein interactions from the STRING database.
-    Assumes Human species (Taxonomy ID: 9606).
+    Queries the InterPro/Pfam REST API for conserved Pfam domains and their residue coordinates.
+    Falls back to UniProtKB Pfam cross-references if the InterPro API is unavailable.
     """
-    url = f"https://string-db.org/api/json/network?identifiers={uniprot_id}&species=9606"
-
+    clean_id = uniprot_id.split("-")[0].strip()
+    url = f"https://www.ebi.ac.uk/interpro/api/entry/pfam/protein/uniprot/{clean_id}/?page_size=50"
+    domains = []
     try:
         response = requests.get(url, timeout=10)
         if response.status_code == 200:
-            data = response.json()
-            interactions = []
-            for i, edge in enumerate(data):
-                if i >= limit:
-                    break
-                interactions.append({
-                    "Target": edge.get("preferredName_B", "Unknown"),
-                    "Interaction Score": edge.get("score", 0.0)
-                })
-            return interactions
+            results = response.json().get("results", [])
+            for item in results:
+                meta = item.get("metadata", {})
+                pfam_id = meta.get("accession", "")
+                name = meta.get("name", "Unknown Domain")
+                for prot in item.get("proteins", []):
+                    for loc in prot.get("entry_protein_locations", []):
+                        for frag in loc.get("fragments", []):
+                            start = frag.get("start")
+                            end = frag.get("end")
+                            contains_mut = (
+                                "Yes" if (mutation_pos and start and end and start <= mutation_pos <= end)
+                                else ("No" if mutation_pos else "—")
+                            )
+                            domains.append({
+                                "Pfam ID": pfam_id,
+                                "Domain Name": name,
+                                "Start": start,
+                                "End": end,
+                                "Length": (end - start + 1) if (start and end) else None,
+                                "Mutation in Domain": contains_mut,
+                                "Source": "InterPro / Pfam API",
+                            })
     except requests.exceptions.RequestException:
-        return []
+        pass
 
-    return []
+    # Fallback to UniProtKB Pfam cross-references if InterPro returned nothing
+    if not domains and uniprot_metadata:
+        for xref in uniprot_metadata.get("Pfam Cross-Refs", []):
+            domains.append({
+                "Pfam ID": xref.get("Pfam ID", ""),
+                "Domain Name": xref.get("Domain Name", "Unknown"),
+                "Start": None,
+                "End": None,
+                "Length": None,
+                "Mutation in Domain": "—",
+                "Source": "UniProtKB Cross-Ref",
+            })
+
+    return domains
 
 
-_BLOSUM62 = substitution_matrices.load("BLOSUM62")
+# Common PROSITE-style sequence motif patterns
+_SEQUENCE_MOTIF_PATTERNS = [
+    ("PS00001", "N-glycosylation site", r"N[^P][ST][^P]"),
+    ("PS00004", "cAMP/cGMP-dependent protein kinase phosphorylation site", r"[RK]{2}.[ST]"),
+    ("PS00005", "Protein kinase C (PKC) phosphorylation site", r"[ST].[RK]"),
+    ("PS00006", "Casein kinase II (CK2) phosphorylation site", r"[ST].{2}[DE]"),
+    ("PS00007", "Tyrosine kinase phosphorylation site", r"[RK].{2,3}[DE].{2,3}Y"),
+    ("PS00008", "N-myristoylation site", r"G[^EDRKHPFYW].{2}[STAGCN][^P]"),
+    ("PS00016", "RGD cell attachment sequence", r"RGD"),
+    ("PS00028", "Zinc finger C2H2-type signature", r"C.{2,4}C.{3}[LIVMFYWC].{8}H.{3,5}H"),
+]
 
 
-def predict_pathogenicity(mutation: str) -> dict:
+def scan_sequence_motifs(sequence: str, mutation_pos: int = None, uniprot_features: list = None) -> dict:
     """
-    Upgraded: this used to return three hardcoded numbers regardless of input.
-    It now derives a real, explainable risk score from the BLOSUM62
-    substitution matrix (how conservative/disruptive the swap is) plus a
-    penalty if the amino acid's physicochemical class changes.
-
-    This is still a fast heuristic, not a clinical-grade predictor -- a
-    production build would call real classifiers (SIFT, PolyPhen-2,
-    AlphaMissense, or the Ensembl VEP API) instead.
+    Identifies functional motifs and sites from:
+    1) UniProtKB curated annotations (Motif, Active site, Binding site, Zinc finger, DNA binding, Site)
+    2) PROSITE-style sequence pattern scanning
     """
-    wt_aa, mut_aa = mutation[0].upper(), mutation[-1].upper()
+    clean_seq = "".join(sequence.split()).upper()
 
-    try:
-        raw_score = _BLOSUM62[wt_aa, mut_aa]
-    except KeyError:
-        raw_score = 0
+    # 1. UniProt curated motifs & sites
+    curated_motifs = []
+    motif_types = {"Motif", "Active site", "Binding site", "Zinc finger", "DNA binding", "Site"}
+    for feat in (uniprot_features or []):
+        if feat.get("Type") in motif_types:
+            start = feat.get("Start")
+            end = feat.get("End")
+            overlaps = (
+                "Yes" if (mutation_pos and start and end and start <= mutation_pos <= end)
+                else ("No" if mutation_pos else "—")
+            )
+            curated_motifs.append({
+                "Type": feat.get("Type"),
+                "Description": feat.get("Description", "—"),
+                "Start": start,
+                "End": end,
+                "Overlaps Mutation": overlaps,
+            })
 
-    # BLOSUM62 scores roughly range from -4 (very disruptive) to +11 (identical).
-    # Map that onto a 0 (benign) -> 1 (deleterious) risk scale.
-    normalized_risk = max(0.0, min(1.0, (4 - raw_score) / 8))
-
-    wt_property = get_amino_acid_property(wt_aa)
-    mut_property = get_amino_acid_property(mut_aa)
-    if wt_property != mut_property:
-        normalized_risk = min(1.0, normalized_risk + 0.15)
-
-    sift_score = round(max(0.0, 1 - normalized_risk), 3)
-    polyphen_score = round(normalized_risk, 3)
-    alpha_missense_score = round(min(1.0, (normalized_risk * 0.7) + (polyphen_score * 0.3)), 3)
-
-    def sift_label(s):
-        return "Deleterious" if s < 0.05 else "Tolerated"
-
-    def polyphen_label(s):
-        if s > 0.85:
-            return "Probably Damaging"
-        if s > 0.45:
-            return "Possibly Damaging"
-        return "Benign"
-
-    def alpha_label(s):
-        if s > 0.7:
-            return "Pathogenic"
-        if s > 0.4:
-            return "Ambiguous"
-        return "Likely Benign"
+    # 2. Sequence regex motif scan
+    pattern_hits = []
+    for prosite_id, motif_name, regex in _SEQUENCE_MOTIF_PATTERNS:
+        for match in re.finditer(f"(?=({regex}))", clean_seq):
+            start = match.start(1) + 1
+            end = match.end(1)
+            overlaps = (
+                "Yes" if (mutation_pos and start <= mutation_pos <= end)
+                else ("No" if mutation_pos else "—")
+            )
+            pattern_hits.append({
+                "Pattern ID": prosite_id,
+                "Motif": motif_name,
+                "Start": start,
+                "End": end,
+                "Matched Sequence": match.group(1),
+                "Overlaps Mutation": overlaps,
+            })
 
     return {
-        "SIFT": {"score": sift_score, "prediction": sift_label(sift_score)},
-        "PolyPhen-2": {"score": polyphen_score, "prediction": polyphen_label(polyphen_score)},
-        "AlphaMissense": {"score": alpha_missense_score, "prediction": alpha_label(alpha_missense_score)},
+        "curated_motifs": curated_motifs,
+        "pattern_hits": pattern_hits,
     }
-
-
-# ========= STEP 5: STRUCTURAL PROTEOMICS =========
-@st.cache_data(ttl=3600, show_spinner=False)
-def fetch_pdb_content(pdb_url: str) -> str:
-    """Fetches the raw PDB file text from the AlphaFold database URL."""
-    if not pdb_url:
-        return ""
-    try:
-        response = requests.get(pdb_url, timeout=10)
-        if response.status_code == 200:
-            return response.text
-    except requests.exceptions.RequestException:
-        return ""
-    return ""

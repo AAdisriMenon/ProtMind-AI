@@ -1,18 +1,18 @@
 import streamlit as st
 from backend import apply_custom_css, render_progress, validate_sequence, validate_uniprot_id, validate_mutation, parse_fasta
 
-st.set_page_config(page_title="Step 1 | ProtMind AI", page_icon="⚡")
+st.set_page_config(page_title="Step 01 | ProtMind AI", page_icon="⚡")
 apply_custom_css()
 render_progress(1)
 
-st.markdown("<h2>⚡ Step 1: User Input</h2>", unsafe_allow_html=True)
+st.markdown("<h2>⚡ Step 01: User Input & Validation</h2>", unsafe_allow_html=True)
 
 with st.form("user_input_form", clear_on_submit=False):
     col1, col2 = st.columns(2)
     with col1:
         uniprot_id = st.text_input("🧬 UniProt ID", placeholder="P04637", help="Example: P04637")
     with col2:
-        mutation = st.text_input("🧪 Mutation", placeholder="R175H", help="Format: [WT][Position][Mut] (e.g., R175H)")
+        mutation = st.text_input("🧪 Mutation", placeholder="R75H", help="Format: [WT][Position][Mut] (e.g., R75H or R175H)")
 
     st.markdown("---")
     st.markdown("### 📂 Sequence Input Options (optional)")
