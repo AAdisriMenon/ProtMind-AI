@@ -16,7 +16,7 @@ st.info("👋 Welcome to **ProtMind AI**. Follow the 3-step pipeline below to an
 
 with st.expander("🧭 3-Step Workflow Architecture", expanded=True):
     st.markdown("""
-- **Step 01 – User Input & Validation**: Provide UniProt ID, mutation (e.g., R75H), and protein sequence (FASTA/upload).
+- **Step 01 – User Input & Validation**: Provide UniProt ID, mutation (e.g., R175H), and protein sequence (FASTA/upload).
 - **Step 02 – Data Retrieval**: Fetch protein annotations and 3D structure from UniProtKB and AlphaFold DB.
 - **Step 03 – Preprocessing & Motif/Domain Search**: Extract sequence features, identify motifs and conserved domains (Pfam).
     """)

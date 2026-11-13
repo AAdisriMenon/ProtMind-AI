@@ -12,7 +12,7 @@ with st.form("user_input_form", clear_on_submit=False):
     with col1:
         uniprot_id = st.text_input("🧬 UniProt ID", placeholder="P04637", help="Example: P04637")
     with col2:
-        mutation = st.text_input("🧪 Mutation", placeholder="R75H", help="Format: [WT][Position][Mut] (e.g., R75H or R175H)")
+        mutation = st.text_input("🧪 Mutation", placeholder="R175H", help="Format: [WT][Position][Mut] (e.g., R175H)")
 
     st.markdown("---")
     st.markdown("### 📂 Sequence Input Options (optional)")
