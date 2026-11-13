@@ -162,7 +162,7 @@ def fetch_uniprot_data(uniprot_id: str) -> dict:
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def fetch_alphafold_prediction(uniprot_id: str, target_pos: int = None) -> dict:
+def fetch_alphafold_prediction(uniprot_id: str) -> dict:
     """Fetches AlphaFold DB prediction metadata including PDB/CIF URLs, residue coverage, and fragment info."""
     clean_accession = uniprot_id.split("-")[0].strip()
     api_url = f"https://alphafold.ebi.ac.uk/api/prediction/{clean_accession}"
@@ -177,14 +177,6 @@ def fetch_alphafold_prediction(uniprot_id: str, target_pos: int = None) -> dict:
             return {}
 
         chosen = data[0]
-        if target_pos is not None and len(data) > 1:
-            for item in data:
-                start = item.get("uniprotStart", 0)
-                end = item.get("uniprotEnd", 0)
-                if start <= target_pos <= end:
-                    chosen = item
-                    break
-
         return {
             "pdbUrl": chosen.get("pdbUrl"),
             "cifUrl": chosen.get("cifUrl"),

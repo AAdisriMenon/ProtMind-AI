@@ -28,18 +28,12 @@ if "payload" not in st.session_state or not st.session_state["payload"]:
 
 payload = st.session_state["payload"]
 uniprot_id = payload.get("uniprot_id", "").strip()
-mutation = payload.get("mutation", "").strip()
-
-try:
-    mut_pos = int(mutation[1:-1])
-except (ValueError, TypeError):
-    mut_pos = None
 
 # Fetch & Cache live data in session_state to avoid redundant network calls on tab clicks
 if "retrieved_data" not in st.session_state or st.session_state.get("current_query_id") != uniprot_id:
     with st.spinner(f"🔬 Querying UniProtKB and AlphaFold DB for {uniprot_id}..."):
         metadata = fetch_uniprot_data(uniprot_id)
-        af_pred = fetch_alphafold_prediction(uniprot_id, target_pos=mut_pos)
+        af_pred = fetch_alphafold_prediction(uniprot_id)
         pdb_url = af_pred.get("pdbUrl") if af_pred else fetch_alphafold_url(uniprot_id)
         pdb_content = fetch_pdb_content(pdb_url) if pdb_url else ""
 
@@ -64,7 +58,7 @@ pdb_content = retrieved.get("pdb_content", "")
 if payload.get("sequence"):
     st.caption(
         f"📄 Active sequence source: {payload.get('source', 'Unknown')} — "
-        f"{len(payload['sequence'])} aa | Target Mutation: **{mutation}**"
+        f"{len(payload['sequence'])} aa"
     )
 
 # ================= TABS =================
@@ -102,7 +96,7 @@ with tab1:
             st.json(display_metadata)
 
 with tab2:
-    st.markdown("<h3>AlphaFold DB 3D Structure (Entire Sequence)</h3>", unsafe_allow_html=True)
+    st.markdown("<h3>AlphaFold DB 3D Structure (Fetched from API)</h3>", unsafe_allow_html=True)
     if not pdb_content:
         if af_pdb_url:
             st.warning("⚠️ AlphaFold PDB URL located, but structure content could not be downloaded.")
@@ -117,13 +111,7 @@ with tab2:
                 f"{f.get('entryId', f'Fragment {i+1}')} (Residues {f.get('uniprotStart', 1)}–{f.get('uniprotEnd', '?')})"
                 for i, f in enumerate(all_frags)
             ]
-            default_idx = 0
-            if mut_pos:
-                for i, f in enumerate(all_frags):
-                    if f.get("uniprotStart", 0) <= mut_pos <= f.get("uniprotEnd", 0):
-                        default_idx = i
-                        break
-            selected_frag_label = st.selectbox("🌐 Select AlphaFold Structure Segment:", frag_labels, index=default_idx)
+            selected_frag_label = st.selectbox("🌐 Select AlphaFold Structure Segment:", frag_labels, index=0)
             selected_frag_idx = frag_labels.index(selected_frag_label)
             active_frag = all_frags[selected_frag_idx]
             if active_frag.get("pdbUrl") != af_pdb_url:
@@ -143,11 +131,11 @@ with tab2:
 
         m_col1, m_col2, m_col3, m_col4 = st.columns(4)
         with m_col1:
-            st.metric("AlphaFold Model", model_id)
+            st.metric("AlphaFold Model ID", model_id)
         with m_col2:
-            st.metric("Structure Scope", "Entire Sequence" if is_entire else f"Segment {cov_start}–{cov_end}")
+            st.metric("Coverage Scope", "Entire Sequence" if is_entire else f"Segment {cov_start}–{cov_end}")
         with m_col3:
-            st.metric("Residues Covered", f"{cov_start} – {cov_end} ({cov_end - cov_start + 1} aa)")
+            st.metric("Covered Residues", f"{cov_start} – {cov_end} ({cov_end - cov_start + 1} aa)")
         with m_col4:
             coverage_pct = round(((cov_end - cov_start + 1) / seq_len) * 100, 1) if seq_len else 100
             st.metric("Sequence Coverage", f"{coverage_pct}%")
@@ -156,17 +144,6 @@ with tab2:
 
         with col_ctrl:
             st.markdown("#### 🎨 Visualization Controls")
-
-            camera_options = ["Entire Sequence (Full Structure)"]
-            if mut_pos:
-                camera_options.append(f"Focus on Mutation Site ({mutation})")
-
-            camera_focus = st.radio(
-                "📷 Camera Focus",
-                camera_options,
-                index=0,
-                help="Select 'Entire Sequence' to frame the full 3D folded protein chain, or 'Focus on Mutation Site' to zoom in tightly to the mutation."
-            )
 
             view_style = st.selectbox(
                 "Protein Representation",
@@ -182,20 +159,16 @@ with tab2:
                 ],
             )
 
-            highlight_mutation = st.checkbox("Highlight Target Residue", value=True)
-            if mut_pos:
-                st.caption(f"📍 Target residue **{mutation}** (pos {mut_pos}) is highlighted in **RED**.")
-
             st.download_button(
                 label="📥 Download AlphaFold .PDB",
                 data=pdb_content,
-                file_name=f"{uniprot_id}_entire_sequence_AF.pdb",
+                file_name=f"{uniprot_id}_AF.pdb",
                 mime="text/plain",
             )
 
             if color_scheme == "AlphaFold Confidence (pLDDT)":
                 st.markdown("""
-                **AlphaFold pLDDT Legend:**
+                **AlphaFold pLDDT Confidence Legend:**
                 - 🟦 **> 90**: Very high confidence
                 - 🩵 **70 – 90**: Confident
                 - 🟨 **50 – 70**: Low confidence
@@ -225,20 +198,8 @@ with tab2:
             elif view_style == "Line":
                 view.setStyle({}, {"line": color_config})
 
-            if mut_pos and highlight_mutation:
-                view.addStyle({"resi": [mut_pos]}, {"stick": {"colorscheme": "redCarbon", "radius": 0.28}})
-                view.addStyle({"resi": [mut_pos]}, {"sphere": {"color": "#FF0055", "radius": 1.2}})
-                view.addLabel(
-                    f"Mut: {mutation}",
-                    {"fontOpacity": 1, "fontSize": 13, "fontColor": "white", "backgroundColor": "#FF0055"},
-                    {"resi": [mut_pos]},
-                )
-
-            # Camera zoom: defaults to Entire Sequence (view.zoomTo()) so whole protein is visible
-            if camera_focus.startswith("Focus on Mutation") and mut_pos:
-                view.zoomTo({"resi": [mut_pos]})
-            else:
-                view.zoomTo()
+            # Pure AlphaFold structure of the sequence — center and fit entire sequence
+            view.zoomTo()
 
             html_string = f'<div style="height: 520px; width: 100%; border-radius: 12px; overflow: hidden;">{view._make_html()}</div>'
             components.html(html_string, height=540)
